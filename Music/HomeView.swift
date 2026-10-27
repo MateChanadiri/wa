@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// Apple-Music-style Home: Top Picks, Recently Played, Made for You mixes, Artists, Recently Added.
 struct HomeView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(PlayerModel.self) private var player
@@ -11,13 +10,9 @@ struct HomeView: View {
     @Environment(DownloadManager.self) private var downloads
 
     private var day: String { Date().formatted(.iso8601.year().month().day()) }
-
-    /// Online with Offline Mode off. Without it, Home only shows music on this iPhone.
     private var connected: Bool { NetworkMonitor.shared.isOnline && !settings.offlineMode }
     private func playable(_ t: Track) -> Bool { connected || t.isOffline }
 
-    // Shelves are kept until the library changes: Home re-renders on every song change and would
-    // otherwise filter and sort the whole library several times each time.
     private var recentlyPlayed: [Track] {
         let connected = connected
         return library.memo("home.recentlyPlayed|\(connected)") {
@@ -41,7 +36,6 @@ struct HomeView: View {
         library.memo("home.downloads") { library.tracks.filter(\.isOffline).sorted { $0.addedAt > $1.addedAt } }
     }
 
-    /// Offline, "On This iPhone" and "Recently Added" would show the same music — keep only the first one.
     private var showsRecentlyAdded: Bool { connected || !layout.visibleSections.contains(.downloads) }
 
     private var suggested: [ModuleTrack] {
@@ -49,13 +43,24 @@ struct HomeView: View {
         return Array(library.newToYou(ModuleStore.shared.suggestions.flatMap(\.tracks)).prefix(20))
     }
 
-    /// AI-curated (or fallback) mixes with their resolved songs.
     private var mixes: [(mix: SavedMix, tracks: [Track])] {
         guard library.tracks.count >= LibraryStore.mixThreshold else { return [] }
         return mixService.mixes.compactMap { m in
             let t = library.tracks(for: m.trackIDs)
             return t.count >= 4 ? (m, t) : nil
         }
+    }
+    
+    // NEW: Recommended for Today
+    private var recommendedForToday: [Track] {
+        let seeds = library.mostPlayed.prefix(5)
+        guard !seeds.isEmpty else { return Array(library.tracks.shuffled().prefix(15)) }
+        return Array(SmartShuffle.order(seeds, options: .init(familiarity: 0.8)).prefix(15))
+    }
+    
+    // NEW: More like {Artist}
+    private var topArtist: LibraryEntry? {
+        library.artistEntries.max(by: { $0.tracks.count < $1.tracks.count })
     }
 
     var body: some View {
@@ -64,19 +69,28 @@ struct HomeView: View {
                 if library.tracks.isEmpty {
                     EmptyLibraryCard().padding(.horizontal, 20)
                 } else {
+                    // Replaced chips/shortcuts with new sections
+                    if !recommendedForToday.isEmpty { trackShelf("Recommended for Today", recommendedForToday, route: .songs) }
+                    
+                    if let artist = topArtist, !artist.tracks.isEmpty {
+                        trackShelf("More like \(artist.title)", Array(artist.tracks.shuffled().prefix(15)), route: artist.route)
+                    }
+                    
+                    if !mixes.isEmpty { madeForYou }
+                    
                     ForEach(layout.visibleSections) { section in
                         switch section {
                         case .topPicks: topPicks
                         case .suggested: if !suggested.isEmpty { suggestedShelf }
-                        case .shortcuts: if !layout.shortcuts.isEmpty { shortcutsGrid }
+                        case .shortcuts: EmptyView() // Removed chips
                         case .recentlyPlayed: if !recentlyPlayed.isEmpty { recentlyPlayedShelf }
-                        case .madeForYou: if !mixes.isEmpty { madeForYou }
+                        case .madeForYou: EmptyView() // Handled above as "Your Playlist"
                         case .artists: if library.artistEntries.count > 0 { artistsShelf }
                         case .recentlyAdded: if showsRecentlyAdded && !recentlyAdded.isEmpty { recentlyAddedShelf }
                         case .latestSongs: latestSongsShelf
                         case .favorites: trackShelf("Favorite Songs", favoriteSongs, route: .favorites)
                         case .playlists: entryShelf("Playlists", library.playlistEntries, route: .playlists)
-                        case .downloads: trackShelf("On This iPhone", onThisIPhone, route: .downloads)
+                        case .downloads: trackShelf("Downloaded Music", onThisIPhone, route: .downloads) // Added downloads
                         case .streaming:
                             if connected { entryShelf("From Your Server", recentlyAdded.filter { $0.tracks.contains(where: \.isRemote) }, route: .albums) }
                         }
@@ -93,14 +107,17 @@ struct HomeView: View {
         }
         .navigationTitle("Home")
         .toolbar {
+            // NEW: Profile/Settings Avatar instead of plain gear
             ToolbarItem(placement: .topBarTrailing) {
-                Button { router.showSettings = true } label: { Image(systemName: "gearshape.fill") }
-                    .accessibilityLabel("Settings")
+                Button { router.showSettings = true } label: {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Theme.accent) // Spotify Green
+                }
+                .accessibilityLabel("Profile & Settings")
             }
         }
     }
-
-    // MARK: Top Picks
 
     private var topPicks: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -109,22 +126,16 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(Array(mixes.prefix(2)), id: \.mix.id) { entry in
-                        pick(eyebrow: "Made for You", title: entry.mix.name, subtitle: entry.mix.vibe,
+                        pick(eyebrow: "Your Playlist", title: entry.mix.name, subtitle: entry.mix.vibe,
                              art: MixArt(tracks: entry.tracks, seed: entry.mix.name)) {
                             player.play(entry.tracks, title: entry.mix.name)
                         }
                     }
-                    if let artist = library.artistEntries.max(by: { $0.tracks.count < $1.tracks.count }) {
+                    if let artist = topArtist {
                         pick(eyebrow: "Station", title: "\(artist.title) & Similar",
                              subtitle: "Endless music, starting with \(artist.title)",
                              art: ArtworkView(tracks: artist.tracks, seed: artist.key, style: .rounded(20), mosaic: artist.tracks.count > 1)) {
                             if let seed = artist.tracks.first { player.startRadio(from: seed) }
-                        }
-                    }
-                    if showsRecentlyAdded, let album = recentlyAdded.first {
-                        pick(eyebrow: "Recently Added", title: album.title, subtitle: album.subtitle,
-                             art: ArtworkView(entry: album, radius: 20)) {
-                            player.play(album)
                         }
                     }
                 }
@@ -146,7 +157,7 @@ struct HomeView: View {
                 Color.clear
                     .aspectRatio(1, contentMode: .fit)
                     .overlay { art.frame(maxWidth: .infinity, maxHeight: .infinity) }
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous)) // Spotify square corners
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "play.fill")
                             .font(.system(size: 18, weight: .bold))
@@ -163,9 +174,6 @@ struct HomeView: View {
         .containerRelativeFrame(.horizontal) { w, _ in w - 64 }
     }
 
-    // MARK: Shelves
-
-    /// Songs from modules, like the ones you play most. Playing one doesn't add it to the library.
     private var suggestedShelf: some View {
         let list = suggested
         return VStack(alignment: .leading, spacing: 12) {
@@ -179,13 +187,9 @@ struct HomeView: View {
                         caption(AsyncImage(url: m.cover.flatMap(URL.init(string:))) { $0.resizable().scaledToFill() } placeholder: {
                             GeneratedCover(spec: CoverKit.auto(m.album + m.artist))
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 12 * ThemeStore.shared.current.cornerScale, style: .continuous)), m.title, m.artist)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous)), m.title, m.artist)
                     }
                     .buttonStyle(.plain)
-                    .contextMenu {
-                        Button { _ = library.addModuleTrack(m, keep: true) } label: { Label("Add to Library", systemImage: "plus") }
-                        Button { downloads.download([library.addModuleTrack(m, keep: true)]) } label: { Label("Download", systemImage: "arrow.down.circle") }
-                    }
                 }
             }
         }
@@ -199,7 +203,7 @@ struct HomeView: View {
                     Button {
                         player.play(recentlyPlayed, startAt: recentlyPlayed.firstIndex(of: t) ?? 0, title: "Recently Played")
                     } label: {
-                        caption(ArtworkView(track: t, radius: 12).thumbnail(460), t.title, t.artist)
+                        caption(ArtworkView(track: t, radius: 8).thumbnail(460), t.title, t.artist)
                     }
                     .buttonStyle(.plain)
                 }
@@ -209,7 +213,7 @@ struct HomeView: View {
 
     private var madeForYou: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Made for You")
+            sectionTitle("Your Playlist") // Renamed from Made for You
             shelfScroll {
                 ForEach(mixes, id: \.mix.id) { entry in
                     Button { player.play(entry.tracks, title: entry.mix.name) } label: {
@@ -229,7 +233,8 @@ struct HomeView: View {
                     NavigationLink(value: artist.route) {
                         VStack(spacing: 8) {
                             ArtworkView(entry: artist).thumbnail(400).frame(width: 128, height: 128)
-                            Text(artist.title).font(.system(size: 14, weight: .medium)).lineLimit(1).frame(width: 128)
+                                .clipShape(Circle()) // Spotify artist circles
+                            Text(artist.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).frame(width: 128)
                         }
                     }
                     .buttonStyle(.plain)
@@ -249,6 +254,7 @@ struct HomeView: View {
                             Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent) // Spotify green
                         Button { player.play(latest.shuffled(), startAt: 0, title: "Latest Songs") } label: {
                             Label("Shuffle", systemImage: "shuffle").frame(maxWidth: .infinity)
                         }
@@ -273,9 +279,9 @@ struct HomeView: View {
                 ForEach(recentlyAdded.prefix(6)) { album in
                     NavigationLink(value: album.route) {
                         VStack(alignment: .leading, spacing: 6) {
-                            ArtworkView(entry: album, radius: 12)
+                            ArtworkView(entry: album, radius: 8)
                                 .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
-                            Text(album.title).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                            Text(album.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                             Text(album.subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -283,46 +289,6 @@ struct HomeView: View {
                 }
             }
             .padding(.horizontal, 20)
-        }
-    }
-
-    // MARK: Customizable sections
-
-    private var shortcutsGrid: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Shortcuts")
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                ForEach(layout.shortcuts) { sc in
-                    Button { run(sc) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: sc.icon).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 22)
-                            Text(sc.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 14)
-                        .frame(height: 52)
-                        .glassEffect(ThemeStore.shared.glass.interactive(), in: RoundedRectangle(cornerRadius: 16 * ThemeStore.shared.current.cornerScale, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .sensoryFeedback(.impact(weight: .light), trigger: player.queueTitle)
-                }
-            }
-            .padding(.horizontal, 20)
-        }
-    }
-
-    private func run(_ sc: HomeShortcut) {
-        switch sc.action {
-        case .shuffleAll: player.play(library.tracks, title: "All Songs", shuffled: true)
-        case .smartShuffle: player.play(SmartShuffle.order(library.tracks, options: .init(familiarity: settings.shuffleFamiliarity)), title: "Smart Shuffle")
-        case .favorites: player.play(library.tracks.filter(\.isFavorite), title: "Favorites", shuffled: true)
-        case .downloads: player.play(library.tracks.filter(\.isOffline), title: "On This iPhone", shuffled: true)
-        case .recentlyAdded: player.play(Array(library.tracks.filter(playable).sorted { $0.addedAt > $1.addedAt }.prefix(50)), title: "Recently Added")
-        case .station: if let seed = library.tracks.randomElement() { player.startStation(from: seed) }
-        case .sleep30: player.setSleepTimer(minutes: 30)
-        case .audioLab: router.open(.audioLab)
-        case .openEntry:
-            if let k = sc.entryKind, let key = sc.entryKey, let e = library.entry(k, key) { router.open(e.route) }
         }
     }
 
@@ -334,7 +300,7 @@ struct HomeView: View {
                 shelfScroll {
                     ForEach(list) { t in
                         Button { player.play(list, startAt: list.firstIndex(of: t) ?? 0, title: title) } label: {
-                            caption(ArtworkView(track: t, radius: 12).thumbnail(460), t.title, t.artist)
+                            caption(ArtworkView(track: t, radius: 8).thumbnail(460), t.title, t.artist)
                         }
                         .buttonStyle(.plain)
                     }
@@ -349,7 +315,7 @@ struct HomeView: View {
                 sectionTitle(title, route: route)
                 shelfScroll {
                     ForEach(entries.prefix(20)) { e in
-                        NavigationLink(value: e.route) { caption(ArtworkView(entry: e, radius: 12).thumbnail(460), e.title, e.subtitle) }
+                        NavigationLink(value: e.route) { caption(ArtworkView(entry: e, radius: 8).thumbnail(460), e.title, e.subtitle) }
                             .buttonStyle(.plain)
                             .contextMenu { EntryMenuItems(entry: e) }
                     }
@@ -357,8 +323,6 @@ struct HomeView: View {
             }
         }
     }
-
-    // MARK: Helpers
 
     @ViewBuilder private func sectionTitle(_ title: String, route: Route? = nil) -> some View {
         if let route {
@@ -389,7 +353,7 @@ struct HomeView: View {
             art.frame(width: 150, height: 150)
                 .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                 Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(width: 150, alignment: .leading)
@@ -398,13 +362,11 @@ struct HomeView: View {
     }
 }
 
-/// Mix cover: a plain 2x2 mosaic of the real album covers, no decoration.
 struct MixArt: View {
     let tracks: [Track]
     let seed: String
-
     var body: some View {
         let distinct = Dictionary(grouping: tracks, by: { $0.album + $0.artist }).values.compactMap(\.first)
-        ArtworkView(tracks: Array(distinct.prefix(4)) + tracks, seed: seed, style: .rounded(14), mosaic: true)
+        ArtworkView(tracks: Array(distinct.prefix(4)) + tracks, seed: seed, style: .rounded(8), mosaic: true)
     }
 }
