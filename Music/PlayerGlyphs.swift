@@ -1,9 +1,7 @@
 import SwiftUI
+import AVKit
 
 // MARK: - Press style
-
-/// Soft circular highlight under the finger. `scales` adds a small squeeze (play/pause); skip buttons and the
-/// star never scale as a whole, only their symbols animate.
 struct TransportPressStyle: ButtonStyle {
     var scales: Bool = false
     var highlight: Bool = true
@@ -23,10 +21,7 @@ struct TransportPressStyle: ButtonStyle {
     }
 }
 
-// MARK: - Skip glyph (the two triangles flow through the button)
-
-/// Three triangles ride a conveyor: one leaves (shrinks and fades), one moves into its place, a small one
-/// grows in from behind. `phase` only ever increases, so repeated taps just keep the belt moving.
+// MARK: - Skip glyph
 struct SkipGlyph: View, Animatable {
     var phase: CGFloat
     var size: CGFloat
@@ -68,11 +63,10 @@ struct SkipGlyph: View, Animatable {
             }
         }
         .frame(width: total, height: size, alignment: .leading)
-                .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+        .scaleEffect(x: mirrored ? -1 : 1, y: 1)
     }
 
     private func triangle(w: CGFloat) -> some View {
-        // The same symbol path the play/pause icon uses, so it gets identical glass vibrancy and stays solid.
         Image(systemName: "play.fill")
             .font(.system(size: size * 0.92, weight: .regular))
             .foregroundStyle(color)
@@ -80,7 +74,6 @@ struct SkipGlyph: View, Animatable {
     }
 }
 
-/// Previous / next button. Only its own glyph animates; the button frame, hit area and neighbours stay still.
 struct SkipButton: View {
     enum Direction { case previous, next }
 
@@ -108,268 +101,160 @@ struct SkipButton: View {
 }
 
 // MARK: - Play / pause icon
-
-/// Pause bars shrink away and fade while the rounded play triangle fades in and grows to full size, and back again.
-/// Both symbols are always in the view; only the playback state decides which one is showing, so it can't get stuck.
+// NO ANIMATION. Snaps instantly.
 struct PlayPauseIcon: View {
     let isPlaying: Bool
     var size: CGFloat = 46
     var color: Color = .white
 
-    @State private var showsPause: Bool
-
-    init(isPlaying: Bool, size: CGFloat = 46, color: Color = .white) {
-        self.isPlaying = isPlaying
-        self.size = size
-        self.color = color
-        _showsPause = State(initialValue: isPlaying)
-    }
-
     var body: some View {
-        ZStack {
-            Image(systemName: "pause.fill")
-                .scaleEffect(showsPause ? 1 : 0.3)
-                .opacity(showsPause ? 1 : 0)
-            Image(systemName: "play.fill")
-                .scaleEffect(showsPause ? 0.3 : 1)
-                .opacity(showsPause ? 0 : 1)
-        }
-        .font(.system(size: size, weight: .regular))
-        .foregroundStyle(color)
-        // Driven explicitly, so the zoom-and-fade plays every time no matter what animation is around it.
-        .onChange(of: isPlaying) { _, playing in
-            withAnimation(.easeInOut(duration: 0.34)) { showsPause = playing }
-        }
-        .accessibilityHidden(true)
+        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+            .font(.system(size: size, weight: .regular))
+            .foregroundStyle(color)
+            .accessibilityHidden(true)
     }
 }
 
-// MARK: - Favourite star
-
-/// The Apple Music star, copied from a frame-by-frame recording at 30 frames per second.
-/// Adding: the outline swells a little, the star fills and grows with a soft glow to about 1.45 times its size,
-/// shrinks under its size to 0.9, and settles back with a small overshoot (about 0.8 seconds).
-/// Removing: the filled star blurs, grows to 1.17 times and fades while the outline comes back (about 0.17 seconds).
-/// Only the symbol animates; the frame never changes. The filled state is read straight from the model,
-/// so rapid taps can't leave it out of step.
+// MARK: - Favourite star (with Confetti)
 struct FavoriteStarButton: View {
     let isFavorite: Bool
     var size: CGFloat = 36
     var filled: Bool = true
     let action: () -> Void
 
-    @State private var pulse: Int = 0
-    @State private var adding = true
-
-    private struct StarFrame {
-        var scale = 1.0
-        var glow = 0.0
-        var tilt = 0.0
-        var ghost = 0.0
-        var ghostScale = 1.0
-    }
+    @State private var confettiTrigger = 0
 
     var body: some View {
         Button {
-            adding = !isFavorite
-            pulse += 1
+            if !isFavorite { confettiTrigger += 1 }
             action()
         } label: {
             ZStack {
                 if filled { Circle().fill(Color.white.opacity(0.18)) }
-                symbol
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(Color.white)
             }
             .frame(width: size, height: size)
             .contentShape(Circle())
+            .overlay {
+                ConfettiBurst(trigger: confettiTrigger)
+            }
         }
         .buttonStyle(TransportPressStyle(scales: false, highlight: false))
-        .sensoryFeedback(.impact(weight: .light), trigger: pulse)
+        .sensoryFeedback(.impact(weight: .light), trigger: confettiTrigger)
         .accessibilityLabel("Favorite")
         .accessibilityValue(isFavorite ? "On" : "Off")
         .accessibilityAddTraits(isFavorite ? .isSelected : [])
     }
+}
 
-    private var symbol: some View {
+// MARK: - Confetti Burst
+struct ConfettiBurst: View {
+    let trigger: Int
+    @State private var particles: [Particle] = []
+
+    struct Particle: Identifiable {
+        let id = UUID()
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var scale: CGFloat = 1
+        var rotation: Double = 0
+        var color: Color
+        var opacity: Double = 1
+    }
+
+    var body: some View {
         ZStack {
-            Image(systemName: "star")
-                .opacity(isFavorite ? 0 : 1)
-            Image(systemName: "star.fill")
-                .opacity(isFavorite ? 1 : 0)
+            ForEach(particles) { p in
+                Rectangle()
+                    .fill(p.color)
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(p.scale)
+                    .rotationEffect(.degrees(p.rotation))
+                    .offset(x: p.x, y: p.y)
+                    .opacity(p.opacity)
+            }
         }
-        .keyframeAnimator(initialValue: StarFrame(), trigger: pulse) { content, v in
-            content
-                .scaleEffect(v.scale)
-                .background {
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: size * 0.78, height: size * 0.78)
-                        .blur(radius: size * 0.2)
-                        .opacity(0.42 * v.glow)
-                }
-        } keyframes: { _ in
-                KeyframeTrack(\.scale) {
-                    LinearKeyframe(adding ? 1.105 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.158 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.237 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.276 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.316 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.342 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.368 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.395 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.421 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.421 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.421 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.434 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.447 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.447 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.447 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.368 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.224 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.079 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.974 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.921 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.895 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.921 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.947 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.974 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.026 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.026 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.013 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.013 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                }
-                KeyframeTrack(\.glow) {
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.35 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.5 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.6 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.75 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.85 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.95 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.85 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.45 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.15 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                }
-                KeyframeTrack(\.tilt) {
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                }
-                KeyframeTrack(\.ghost) {
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 0.0 : 0.0, duration: 1.0 / 30)
-                }
-                KeyframeTrack(\.ghostScale) {
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                    LinearKeyframe(adding ? 1.0 : 1.0, duration: 1.0 / 30)
-                }
+        .onChange(of: trigger) { _, newValue in
+            if newValue > 0 { spawn() }
         }
-        .font(.system(size: size * 0.46, weight: .semibold))
-        .foregroundStyle(Color.white)
-        .animation(.easeOut(duration: 0.03), value: isFavorite)
+    }
+
+    private func spawn() {
+        particles.removeAll()
+        let colors: [Color] = [.green, .blue, .yellow, .pink, .purple, .orange]
+        for _ in 0..<20 {
+            let angle = Double.random(in: 0...2 * .pi)
+            let distance = CGFloat.random(in: 20...70)
+            let p = Particle(
+                x: cos(angle) * distance,
+                y: sin(angle) * distance,
+                scale: CGFloat.random(in: 0.5...1.2),
+                rotation: Double.random(in: 0...360),
+                color: colors.randomElement() ?? .green
+            )
+            particles.append(p)
+        }
+
+        withAnimation(.easeOut(duration: 0.7)) {
+            for i in particles.indices {
+                particles[i].x *= 1.8
+                particles[i].y *= 1.8
+                particles[i].scale = 0
+                particles[i].opacity = 0
+            }
+        }
+    }
+}
+
+// MARK: - AirPlay Button
+struct AirPlayButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.tintColor = .white
+        picker.activeTintColor = .systemGreen
+        picker.prioritizesVideoDevices = false
+        return picker
+    }
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+// MARK: - Swipe Down to Minimize Modifier
+// Attach this to your NowPlayingView root ZStack
+public struct SwipeDownToDismiss: ViewModifier {
+    @Binding var isPresented: Bool
+    @State private var offset: CGFloat = 0
+
+    public func body(content: Content) -> some View {
+        content
+            .offset(y: offset)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20, coordinateSpace: .global)
+                    .onChanged { value in
+                        if value.translation.height > 0 {
+                            offset = value.translation.height
+                        }
+                    }
+                    .onEnded { value in
+                        if value.translation.height > 120 || value.predictedEndTranslation.height > 250 {
+                            withAnimation(.easeOut(duration: 0.2)) { offset = 1000 }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                isPresented = false
+                                offset = 0
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                offset = 0
+                            }
+                        }
+                    }
+            )
+    }
+}
+
+extension View {
+    public func swipeDownToDismiss(isPresented: Binding<Bool>) -> some View {
+        self.modifier(SwipeDownToDismiss(isPresented: isPresented))
     }
 }
