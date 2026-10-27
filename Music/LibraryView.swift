@@ -48,7 +48,7 @@ struct LibraryView: View {
         .animation(.smooth, value: library.pinned)
         .animation(.smooth, value: library.tracks.isEmpty)
         .trackScroll()
-        .navigationTitle("Library")
+        .navigationTitle("Your Library")
         .sheet(isPresented: $editingRows) { LibraryRowsEditor() }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -60,12 +60,6 @@ struct LibraryView: View {
                         .accessibilityLabel("Add Music")
                 }
             }
-            if !library.tracks.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink(value: Route.organize) { Image(systemName: "wand.and.stars") }
-                        .accessibilityLabel("Organize")
-                }
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { router.showSettings = true } label: { Image(systemName: "gearshape.fill") }
                     .accessibilityLabel("Settings")
@@ -73,9 +67,13 @@ struct LibraryView: View {
         }
     }
 
-    /// Apple Music's Library list: red symbols, big titles, hairlines between the rows.
     private var categories: some View {
-        let rows: [LibraryRowEntry] = LibraryRowsStore.decode(rowsRaw).filter(\.visible)
+        // Ensure Downloads is always present
+        var rows: [LibraryRowEntry] = LibraryRowsStore.decode(rowsRaw).filter(\.visible)
+        if !rows.contains(where: { $0.row == .downloads }) {
+            rows.append(LibraryRowEntry(row: .downloads, visible: true))
+        }
+        
         return VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { i, e in
                 row(e.row.title, e.row.symbol, e.row.route, count(e.row), last: i == rows.count - 1)
@@ -102,7 +100,7 @@ struct LibraryView: View {
                         .font(.system(size: 22))
                         .foregroundStyle(Theme.accent)
                         .frame(width: 34)
-                    Text(title).font(.system(size: 22))
+                    Text(title).font(.system(size: 22, weight: .semibold))
                     Spacer()
                     if let count { Text("\(count)").font(.system(size: 15)).foregroundStyle(.tertiary) }
                     Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(.tertiary)
@@ -120,7 +118,7 @@ struct PinnedCell: View {
     let entry: LibraryEntry
     var body: some View {
         VStack(spacing: 8) {
-            ArtworkView(entry: entry, radius: 12)
+            ArtworkView(entry: entry, radius: 8)
             Text(entry.title)
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
