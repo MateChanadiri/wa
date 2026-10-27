@@ -1,32 +1,21 @@
 import SwiftUI
 
-/// Add + search pills around the native tab bar.
-/// Positions are plain animated coordinates (no structural layout changes), so collapsing and
-/// expanding while scrolling is a smooth glide instead of a re-layout.
 struct SearchLayer: View {
     @Environment(Router.self) private var router
     @Environment(PlayerModel.self) private var player
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focused: Bool
-    /// The bar is on screen: the app is in front and no full-screen player covers it.
     @State private var watching = true
 
-    /// Same height as the native tab bar (measured 62 pt) so all pills line up exactly.
     static let size: CGFloat = 62
     static let gap: CGFloat = 8
-    /// Size and left margin of the native tab bar once it minimises while scrolling.
     static let minSize: CGFloat = 49
     static let minMargin: CGFloat = 27
-    /// Width of the native two-tab bar with the default titles; the real bar is measured (`barFrame`).
     static let barWidth: CGFloat = 188
 
-    /// Follows the real system tab bar (TabBarProbe), not the scroll direction.
     @State private var barMinimized = false
-    /// The "+" only shows while the bar is fully expanded and has settled, so it never overlaps the bar mid-animation.
     @State private var addVisible = true
     @State private var settleToken = 0
-    /// Where the expanded system bar really is. Its width depends on the tab titles (themes rename them,
-    /// you can too) and the text size, so the pills go next to it instead of next to an assumed 188 pt.
     @State private var barFrame: CGRect?
     @State private var lastReading: CGRect?
 
@@ -55,7 +44,6 @@ struct SearchLayer: View {
             let searching = router.searchActive
             let sz = collapsed ? Self.minSize : Self.size
 
-            // Target coordinates for the two pills: either side of the bar, kept on screen.
             let origin = geo.frame(in: .global).minX
             let barMinX = barFrame.map { $0.minX - origin } ?? (W - Self.barWidth) / 2
             let barMaxX = barFrame.map { $0.maxX - origin } ?? (W + Self.barWidth) / 2
@@ -76,6 +64,9 @@ struct SearchLayer: View {
                     .background(Color(.systemBackground))
                     .transition(.opacity)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // FIXED: Ensure taps are absorbed cleanly
+                    .contentShape(Rectangle())
+                    .onTapGesture { focused = false } 
                 }
 
                 if !searching, player.current != nil {
@@ -86,8 +77,6 @@ struct SearchLayer: View {
                 }
 
                 ZStack(alignment: .bottomLeading) {
-                    // Leading "+": outside the glass container so it never morphs into other glass while moving.
-                    // It fades out where it was and fades in at its new spot once the system tab bar has resized.
                     if !searching && !collapsed && addVisible {
                         AddMusicMenu(size: Self.size)
                             .frame(width: Self.size, height: Self.size)
@@ -114,7 +103,6 @@ struct SearchLayer: View {
                                 .transition(.opacity)
                             }
 
-                            // Trailing pill: magnifier, morphs into the search field.
                             searchPill(searching: searching, width: pillW, height: pillH)
                                 .offset(x: pillX)
                         }
@@ -130,7 +118,6 @@ struct SearchLayer: View {
         }
         .onChange(of: router.searchActive) { _, on in
             guard on else { focused = false; return }
-            // Bringing up the keyboard is heavy; doing it on the same frames as the pill morph made opening stutter.
             Task {
                 try? await Task.sleep(for: .milliseconds(380))
                 if router.searchActive { focused = true }
@@ -138,14 +125,11 @@ struct SearchLayer: View {
         }
         .onChange(of: scenePhase == .active && !router.showPlayer && !router.showFullLyrics, initial: true) { _, on in watching = on }
         .task {
-            // Polling the bar 25 times a second is only worth it while it's visible; otherwise (in the background
-            // while music plays, under the player) it just kept the CPU awake.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(watching ? 40 : 1000))
                 guard watching else { continue }
                 let sys = TabBarProbe.isMinimized() ?? router.collapsed
                 if sys != barMinimized { barChanged(sys) }
-                // Taken once the bar has stopped moving (two equal readings), never mid-animation.
                 let reading = TabBarProbe.expandedFrame()
                 if let r = reading, let last = lastReading, r.isApproximately(last),
                    !(barFrame.map { $0.isApproximately(r) } ?? false) {
@@ -161,7 +145,11 @@ struct SearchLayer: View {
         return ZStack {
             if searching {
                 HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.accent)
+                    // Spotify style search icon
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.primary)
+                    
                     TextField("Songs, Artists, Albums", text: $router.searchText)
                         .focused($focused)
                         .submitLabel(.search)
@@ -173,7 +161,6 @@ struct SearchLayer: View {
                         }
                         .buttonStyle(.plain)
                     } else if focused {
-                        // Just browsing: put the keyboard away without leaving search.
                         Button { focused = false } label: {
                             Image(systemName: "keyboard.chevron.compact.down").foregroundStyle(.secondary)
                         }
@@ -188,9 +175,10 @@ struct SearchLayer: View {
                 Button {
                     router.searchActive = true
                 } label: {
+                    // Spotify style search icon
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(Color.primary)
                         .frame(width: width, height: height)
                         .contentShape(Capsule())
                 }
