@@ -1,11 +1,9 @@
 import SwiftUI
 
-/// Content of the native tab bar bottom accessory (the system draws the glass capsule).
 struct MiniPlayer: View {
     @Environment(PlayerModel.self) private var player
     @Environment(Router.self) private var router
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
-    /// The placement flips for a moment while the player zooms open or closed; the layout only follows it when no player is covering.
     @State private var roomy = true
 
     var body: some View {
@@ -22,10 +20,8 @@ struct MiniPlayer: View {
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                         .fixedSize(horizontal: false, vertical: true)
-                    // The artist line is always laid out, so it cannot blink out while the player zooms.
                     Text(player.current?.artist ?? " ")
                         .font(.system(size: 11))
-                        // A plain colour, not `.secondary`: the secondary style drops out while the glass bar is mid-morph.
                         .foregroundStyle(Color.primary.opacity(player.current == nil ? 0 : 0.62))
                         .lineLimit(1)
                         .fixedSize(horizontal: false, vertical: true)
@@ -42,7 +38,15 @@ struct MiniPlayer: View {
             }
             .buttonStyle(TransportPressStyle(scales: false, highlight: false))
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            
             if roomy {
+                FavoriteStarButton(isFavorite: player.current?.isFavorite ?? false, size: 22, filled: false) {
+                    if let t = player.current { player.library.toggleFavorite(t) }
+                }
+                
+                AirPlayButton()
+                    .frame(width: 22, height: 22)
+                
                 SkipButton(direction: .next, size: 22, frame: 42, color: Color.primary, highlight: false) { player.next() }
             }
         }
@@ -56,7 +60,6 @@ struct MiniPlayer: View {
     }
 }
 
-/// Capsule variant shown next to the search pill above the native tab bar.
 struct MiniPlayerCapsule: View {
     @Environment(PlayerModel.self) private var player
     @Environment(Router.self) private var router
@@ -69,7 +72,9 @@ struct MiniPlayerCapsule: View {
                     ArtworkView(track: track, radius: 9).thumbnail()
                         .frame(width: 38, height: 38)
                         .id(track.id)
-                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        // CLEAN SLIDE, NO FADE
+                        .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
+                    
                     VStack(alignment: .leading, spacing: 0) {
                         Text(track.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                         if style != .compact {
@@ -77,7 +82,8 @@ struct MiniPlayerCapsule: View {
                         }
                     }
                     .id(track.id)
-                    .transition(.blurReplace)
+                    // CLEAN SLIDE, NO FADE
+                    .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)))
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -97,6 +103,14 @@ struct MiniPlayerCapsule: View {
                         }
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                
+                FavoriteStarButton(isFavorite: track.isFavorite, size: 22, filled: false) {
+                    player.library.toggleFavorite(track)
+                }
+                
+                AirPlayButton()
+                    .frame(width: 22, height: 22)
+                
                 SkipButton(direction: .next, size: 22, frame: 44, color: Color.primary, highlight: false) { player.next() }
             }
             .buttonStyle(.plain)
@@ -107,19 +121,18 @@ struct MiniPlayerCapsule: View {
                 if style == .bar {
                     MiniPlayerProgress(ring: false)
                         .frame(height: 3)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 4)
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 4)
                 }
             }
             .glassEffect(ThemeStore.shared.glass.interactive(), in: Capsule())
             .contentShape(Capsule())
             .miniPlayerSwipes()
-            .animation(.smooth, value: track.id)
+            // REMOVED .animation(.smooth, value: track.id)
         }
     }
 }
 
-/// The progress ring / bar on its own, so only it redraws on every 50 ms position tick, not the whole glass capsule.
 private struct MiniPlayerProgress: View {
     @Environment(PlayerModel.self) private var player
     let ring: Bool
@@ -140,9 +153,6 @@ private struct MiniPlayerProgress: View {
 }
 
 // MARK: - Swipes
-
-/// Swipe the mini player left for the next song, right for the previous one, down to stop and close it.
-/// It follows the finger a little so the gesture feels attached; taps and its buttons keep working.
 struct MiniPlayerSwipes: ViewModifier {
     @Environment(PlayerModel.self) private var player
     @State private var drag: CGSize = .zero
@@ -162,7 +172,6 @@ struct MiniPlayerSwipes: ViewModifier {
                 DragGesture(minimumDistance: 14)
                     .onChanged { v in
                         guard player.current != nil else { return }
-                        // Lock to the main direction so a sideways swipe doesn't also sink.
                         drag = abs(v.translation.width) > abs(v.translation.height)
                             ? CGSize(width: v.translation.width, height: 0)
                             : CGSize(width: 0, height: max(0, v.translation.height))
@@ -188,12 +197,8 @@ struct MiniPlayerSwipes: ViewModifier {
             )
             .sensoryFeedback(.impact(weight: .light), trigger: skips)
             .sensoryFeedback(.impact(weight: .medium), trigger: stops)
-            .accessibilityAction(named: "Next Song") { player.next() }
-            .accessibilityAction(named: "Previous Song") { player.previous(always: true) }
-            .accessibilityAction(named: "Stop and Close") { player.stop() }
     }
 
-    /// Moves less the further it's pulled, up to about `limit`.
     private func rubber(_ x: CGFloat, limit: CGFloat) -> CGFloat {
         let s: CGFloat = x < 0 ? -1 : 1
         return s * limit * (1 - 1 / (abs(x) / limit + 1))
@@ -201,4 +206,3 @@ struct MiniPlayerSwipes: ViewModifier {
 }
 
 extension View { func miniPlayerSwipes() -> some View { modifier(MiniPlayerSwipes()) } }
-
